@@ -2,15 +2,14 @@ name: CI
 
 on:
   push:
-    branches: [ master ]
   pull_request:
-    branches: [ master ]
 
   # Allows you to run this workflow manually from the Actions tab
   workflow_dispatch:
 
 jobs:
   heffte:
+    if: ${{ github.repository == 'icl-utk-edu/heffte' && github.ref == 'refs/heads/master' }}
     strategy:
       matrix:
         maker: [cmake, spack]
@@ -49,3 +48,139 @@ jobs:
                 spack-build-*/CMakeFiles/*.log
                 build/CMakeFiles/*.log
                 .spack/test/*/*.txt
+  gh-hosted:
+    if: ${{ github.repository != 'icl-utk-edu/heffte' }}
+    strategy:
+      matrix:
+        backend: [BUILTIN, FFTW, MKL, CUDA, ROCM, ONEAPI]
+        simd: [scalar]
+        os: [ubuntu-24.04]
+        include:
+          - backend: FFTW
+            simd: scalar
+            os: ubuntu-24.04-arm
+          - backend: BUILTIN
+            simd: scalar
+            os: ubuntu-24.04-arm
+          - backend: BUILTIN
+            simd: avx
+            os: ubuntu-24.04
+          - backend: BUILTIN
+            simd: avx512
+            os: ubuntu-24.04
+      fail-fast: false
+    runs-on: ${{ matrix.os }}
+    env:
+      enable_python: ${{ ! contains(fromJson('["CUDA", "ROCM", "MKL", "ONEAPI"]'), matrix.backend) }}
+      run_testsuite: ${{ ! contains(fromJson('["CUDA", "ROCM", "MKL", "ONEAPI"]'), matrix.backend) && matrix.simd != 'avx512' }}
+    timeout-minutes: 40
+    steps:
+      - name: Install dependencies
+        shell: bash
+        run: |
+          PKGS="cmake git sed python3 python3-dev python3-venv"
+          case ${{ matrix.backend }} in
+            "ONEAPI") PKGS+=" intel-oneapi-compiler-dpcpp-cpp intel-oneapi-compiler-fortran intel-oneapi-common-vars" ;;
+            "ROCM")   PKGS+=" clang-17 clang++-17 gfortran-12" ;;
+            "CUDA")   PKGS+=" gcc-12 g++-12 gfortran-12" ;;
+            "MKL")    PKGS+=" gcc-13 g++-13 gfortran-13" ;;
+            *)        PKGS+=" gcc-14 g++-14 gfortran-14" ;;
+          esac
+          case ${{ matrix.backend }} in
+            "ONEAPI") PKGS+=" intel-oneapi-mpi-devel" ;;
+            "MKL")    PKGS+=" mpich libmpich-dev" ;;
+            *)        PKGS+=" openmpi-bin libopenmpi-dev python3-mpi4py" ;;
+          esac
+          case ${{ matrix.backend }} in
+            "ONEAPI") PKGS+=" intel-oneapi-mkl-devel libmkl-dev" ;;
+            "ROCM")   PKGS+=" hipcc rocm-cmake librocfft-dev" ;;
+            "CUDA")   PKGS+=" nvidia-cuda-toolkit" ;;
+            "FFTW")   PKGS+=" libfftw3-dev libfftw3-mpi-dev" ;;
+            "MKL")    PKGS+=" intel-mkl" ;;
+          esac
+          if [ ${{ matrix.backend }} = "ONEAPI" ]; then
+            wget -O- https://apt.repos.intel.com/intel-gpg-keys/GPG-PUB-KEY-INTEL-SW-PRODUCTS.PUB \
+              | gpg --dearmor | sudo tee /usr/share/keyrings/oneapi-archive-keyring.gpg > /dev/null
+            echo "deb [signed-by=/usr/share/keyrings/oneapi-archive-keyring.gpg] https://apt.repos.intel.com/oneapi all main" \
+              | sudo tee /etc/apt/sources.list.d/oneAPI.list
+          fi
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ${PKGS}
+          sudo apt-get clean
+          case ${{ matrix.backend }} in
+            "ONEAPI") source /opt/intel/oneapi/setvars.sh ;;
+            "ROCM") sudo ln -s /usr/lib/x86_64-linux-gnu/cmake/hip-lang /usr/lib/cmake/hip-lang ;;
+          esac
+          if [ ${{ env.enable_python }} = "true" ]; then
+            python3 -m venv --system-site-packages ${{ runner.temp }}/venv
+            source ${{ runner.temp }}/venv/bin/activate
+            python3 -m pip install --no-cache-dir "numpy==2.1.3" "numba==0.61.0" "mpi4py==3.1.5" "llvmlite==0.44.0"
+          fi
+      - uses: actions/checkout@v4
+      - name: Build
+        shell: bash
+        run: |
+          if [ ${{ env.enable_python }} = "true" ]; then source ${{ runner.temp }}/venv/bin/activate; fi
+          sed -i 's|# handle components and standard CMake arguments|set(Heffte_MKL_INCLUDES "/usr/include/mkl")|' cmake/FindHeffteMKL.cmake
+          ARGS=" -D MPIEXEC_PREFLAGS='--oversubscribe' -D CMAKE_INSTALL_PREFIX=install -D CMAKE_BUILD_TYPE=Release -D Heffte_ENABLE_TESTING=ON -D Heffte_ENABLE_TRACING=ON"
+          case ${{ matrix.simd }} in
+            "avx")    ARGS+=" -D Heffte_ENABLE_AVX=ON" ;;
+            "avx512") ARGS+=" -D Heffte_ENABLE_AVX512=ON" ;;
+          esac
+          case ${{ matrix.backend }} in
+            "MKL")    ARGS+=" -D Heffte_ENABLE_MKL=ON" ;;
+            "FFTW")   ARGS+=" -D Heffte_ENABLE_FFTW=ON"; fftw-wisdom ;;
+            "ROCM")   ARGS+=" -D Heffte_ENABLE_ROCM=ON -D CMAKE_HIP_ARCHITECTURES='gfx90a;gfx942;gfx1100'"; which hipcc ;;
+            "CUDA")   ARGS+=" -D Heffte_ENABLE_CUDA=ON -D CMAKE_CUDA_ARCHITECTURES='70;75;86;89;90' -D Heffte_DISABLE_GPU_AWARE_MPI=ON"; which nvcc ;;
+            "ONEAPI") ARGS+=" -D Heffte_ENABLE_ONEAPI=ON"; source /opt/intel/oneapi/setvars.sh ;;
+          esac
+          W_EXTRA_EXTENSIONS="-Wshadow -Wno-float-conversion -Wno-implicit-float-conversion -Wno-sign-compare -Wno-unused-function -Wno-unused-parameter -Wno-array-bounds"
+          W_ERROR="-Werror"
+          case ${{ matrix.backend }} in
+            "ONEAPI") W_EXTRA_EXTENSIONS+=" -Wno-c99-extensions" ;;
+            "ROCM")   W_EXTRA_EXTENSIONS+=" -Wno-missing-variable-declarations" ;;
+          esac
+          case ${{ matrix.backend }} in
+            "ONEAPI") W_ERROR="" ;;
+            "MKL")    W_ERROR="" ;;
+          esac
+          export    FFLAGS="${W_ERROR}"
+          export    CFLAGS="${W_ERROR} -pedantic -Wall -Wextra ${W_EXTRA_EXTENSIONS} -Wno-strict-prototypes"
+          export  CXXFLAGS="${W_ERROR} -pedantic -Wall -Wextra ${W_EXTRA_EXTENSIONS}"
+          export  HIPFLAGS="${W_ERROR} -pedantic -Wall -Wextra ${W_EXTRA_EXTENSIONS}"
+          export CUDAFLAGS="--Werror=all-warnings -Xcompiler=-Wall -Xcompiler=-Wextra"
+          for opt in ${W_EXTRA_EXTENSIONS}; do export CUDAFLAGS="${CUDAFLAGS} -Xcompiler=${opt}"; done
+          case ${{ matrix.backend }} in
+            "ONEAPI") export FC=ifx         CC=icx      CXX=icpx  ;;
+            "ROCM")   export FC=gfortran-12 CC=clang-17 CXX=clang++-17 HIPCC=hipcc  HIPCXX=clang++-17 ;;
+            "CUDA")   export FC=gfortran-12 CC=gcc-12   CXX=g++-12     CUDACXX=nvcc ;;
+            "MKL")    export FC=gfortran-13 CC=gcc-13   CXX=g++-13 ;;
+            *)        export FC=gfortran-14 CC=gcc-14   CXX=g++-14 ;;
+          esac
+          if [[ "${FC}" =~ ^gfortran.* ]]; then FFLAGS+=" -Wall -Wextra"; fi
+          ARGS+=" -D Heffte_ENABLE_FORTRAN=ON -D CMAKE_C_COMPILER=${CC} -D Heffte_ENABLE_PYTHON=${{ env.enable_python }}"
+          if [ "${{ matrix.backend }}" = "MKL" ]; then
+            for cmake_target_type in EXE SHARED STATIC MODULE; do
+              ARGS+=" -D CMAKE_${cmake_target_type}_LINKER_FLAGS=-Wno-alloc-size-larger-than"
+            done
+          fi
+          mkdir -p build
+          cd build
+          cmake ${ARGS} ..
+          make -j$(nproc)
+          make install
+          ls -lR install/lib*/libheffte.so
+      - name: Test
+        if: ${{ env.run_testsuite == 'true' }}
+        shell: bash
+        run: |
+          if [ ${{ env.enable_python }} = "true" ]; then source ${{ runner.temp }}/venv/bin/activate; fi
+          cd build
+          ctest -V --force-new-ctest-process
+      - name: SmokeTest
+        shell: bash
+        if: ${{ env.run_testsuite == 'true' }}
+        run: |
+          if [ ${{ env.enable_python }} = "true" ]; then source ${{ runner.temp }}/venv/bin/activate; fi
+          cd build
+          make test_install
