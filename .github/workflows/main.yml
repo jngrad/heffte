@@ -75,6 +75,8 @@ jobs:
       run_testsuite: ${{ ! contains(fromJson('["CUDA", "ROCM", "MKL", "ONEAPI"]'), matrix.backend) && matrix.simd != 'avx512' }}
     timeout-minutes: 40
     steps:
+      - name: Get runner specifications
+        run: lscpu | egrep 'Model name|Socket|Thread|NUMA|Flags|Virtualization|CPU\(s\)|CPU op-mode'
       - name: Install dependencies
         shell: bash
         run: |
