@@ -132,6 +132,8 @@ find_package_handle_standard_args(HeffteMKL DEFAULT_MSG
                                   Heffte_MKL_LIBRARIES Heffte_MKL_INCLUDES)
 
 # create imported target
-add_library(Heffte::MKL INTERFACE IMPORTED GLOBAL)
-target_link_libraries(Heffte::MKL INTERFACE ${Heffte_MKL_LIBRARIES})
-set_target_properties(Heffte::MKL PROPERTIES INTERFACE_INCLUDE_DIRECTORIES ${Heffte_MKL_INCLUDES})
+if (HeffteMKL_FOUND AND NOT TARGET Heffte::MKL)
+    add_library(Heffte::MKL INTERFACE IMPORTED GLOBAL)
+    target_link_libraries(Heffte::MKL INTERFACE ${Heffte_MKL_LIBRARIES})
+    set_target_properties(Heffte::MKL PROPERTIES INTERFACE_INCLUDE_DIRECTORIES ${Heffte_MKL_INCLUDES})
+endif()

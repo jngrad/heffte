@@ -127,6 +127,8 @@ find_package_handle_standard_args(HeffteFFTW DEFAULT_MSG
                                   FFTW_INCLUDES FFTW_LIBRARIES)
 
 # create imported target
-add_library(Heffte::FFTW INTERFACE IMPORTED GLOBAL)
-target_link_libraries(Heffte::FFTW INTERFACE ${FFTW_LIBRARIES})
-set_target_properties(Heffte::FFTW PROPERTIES INTERFACE_INCLUDE_DIRECTORIES ${FFTW_INCLUDES})
+if (HeffteFFTW_FOUND AND NOT TARGET Heffte::FFTW)
+    add_library(Heffte::FFTW INTERFACE IMPORTED GLOBAL)
+    target_link_libraries(Heffte::FFTW INTERFACE ${FFTW_LIBRARIES})
+    set_target_properties(Heffte::FFTW PROPERTIES INTERFACE_INCLUDE_DIRECTORIES ${FFTW_INCLUDES})
+endif()

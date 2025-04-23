@@ -22,5 +22,7 @@ heffte_find_libraries(REQUIRED mkl_sycl
 find_package_handle_standard_args(HeffteOneApi DEFAULT_MSG heffte_onemkl)
 
 # create imported target
-add_library(Heffte::OneMKL INTERFACE IMPORTED GLOBAL)
-target_link_libraries(Heffte::OneMKL INTERFACE ${heffte_onemkl})
+if (HeffteOneApi_FOUND AND NOT TARGET Heffte::OneMKL)
+    add_library(Heffte::OneMKL INTERFACE IMPORTED GLOBAL)
+    target_link_libraries(Heffte::OneMKL INTERFACE ${heffte_onemkl})
+endif()
